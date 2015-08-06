@@ -97,7 +97,6 @@ import Network.URI
 import Data.Time.Format
 import Data.Time.Clock
 import Data.Time.Clock.POSIX
-import System.IO
 
 -- | Result of 'download' operation.
 data DownloadResult
@@ -237,6 +236,8 @@ openSocket ha port =
         , NS.addrAddress = NS.SockAddrInet (toEnum port) ha
         , NS.addrCanonName = Nothing
         }
+
+openSocket' :: NS.AddrInfo -> IO NS.Socket
 openSocket' addr = do
     E.bracketOnError
         (NS.socket (NS.addrFamily addr) (NS.addrSocketType addr)
@@ -247,6 +248,7 @@ openSocket' addr = do
             NS.connect sock (NS.addrAddress addr)
             return sock)
 
+openSocketByName :: Show a => NS.HostName -> a -> IO NS.Socket
 openSocketByName host port = do
     let hints = NS.defaultHints
                 { NS.addrFlags = []-- [NS.AI_ADDRCONFIG, NS.AI_NUMERICSERV]
@@ -350,10 +352,10 @@ rawDownload f (Downloader {..}) url hostAddress opts =
                      , C.hostAddress = hostAddress
                      , C.checkStatus = \ _ _ _ -> Nothing
                      }
-            disableCompression rq =
-                rq { C.requestHeaders =
-                       ("Accept-Encoding", "") : C.requestHeaders rq }
-        req <- C.runResourceT $ f rq1
+            disableCompression rq' =
+                rq' { C.requestHeaders =
+                       ("Accept-Encoding", "") : C.requestHeaders rq' }
+        req' <- C.runResourceT $ f rq1
         let dl req firstTime = do
                 r <- C.runResourceT (timeout (dsTimeout settings * 1000000) $ do
                     r <- C.http req manager
@@ -402,7 +404,7 @@ rawDownload f (Downloader {..}) url hostAddress opts =
                             dl (disableCompression req) False
                     _ ->
                         return $ fromMaybe (DRError "Timeout", Nothing) r
-        dl req True
+        dl req' True
     where toHeader :: String -> N.Header
           toHeader h = let (a,b) = break (== ':') h in
                        (fromString a, fromString (tail b))
@@ -438,7 +440,7 @@ httpExceptionToDR url exn = return $ case exn of
     C.OverlongHeaders -> DRError "Overlong HTTP headers"
     C.ResponseTimeout -> DRError "Timeout"
     C.FailedConnectionException _host _port -> DRError "Connection failed"
-    C.FailedConnectionException2 _ _ _ exn -> DRError $ "Connection failed: " ++ show exn
+    C.FailedConnectionException2 _ _ _ exn' -> DRError $ "Connection failed: " ++ show exn'
     C.InvalidDestinationHost _ -> DRError "Invalid destination host"
     C.HttpZlibException e -> DRError $ show e
     C.ExpectedBlankAfter100Continue -> DRError "Expected blank after 100 (Continue)"
@@ -553,7 +555,7 @@ makeDownloadResultC curTime url c headers b = do
           redownloadOpts acc (_:xs) = redownloadOpts acc xs
           fixNonAscii =
               escapeURIString
-                  (\ c -> ord c <= 0x7f && c `notElem` (" []{}|\"" :: String)) .
+                  (\ x -> ord x <= 0x7f && x `notElem` (" []{}|\"" :: String)) .
               trimString
           relUri (fixNonAscii -> r) =
               fromMaybe r $
@@ -570,6 +572,7 @@ tryParseTime formats string =
     map (\ fmt -> parseTimeM True defaultTimeLocale fmt (trimString string))
         formats
 
+trimString :: String -> String
 trimString = reverse . dropWhile isSpace . reverse . dropWhile isSpace
 
 parseHttpTime :: String -> Maybe UTCTime
